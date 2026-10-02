@@ -634,7 +634,9 @@ class _CustomerPortalPageState extends State<CustomerPortalPage> {
   }
 
   void _buyAgain(CustomerOrder order) {
-    final availableProductIds = demoProducts.map((product) => product.id).toSet();
+    final availableProductIds = demoProducts
+        .map((product) => product.id)
+        .toSet();
     var restoredQuantity = 0;
     setState(() {
       for (final item in order.items) {

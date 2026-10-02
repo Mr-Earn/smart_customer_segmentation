@@ -162,7 +162,9 @@ Customer accounts have **Home**, **Shop**, **Offers**, **Orders**, and **Profile
     step. Checkout creates a demo order request and does not collect payment.
 - **Orders** lists the customer’s submitted demo order requests and line totals.
     Customers can cancel an order while it is still Received; cancellation is
-    unavailable after processing begins.
+    unavailable after processing begins. **Buy again** copies available items to
+    the cart at current demo catalog prices and still requires checkout
+    confirmation.
 - **Profile** lets customers update their display name and manage preferences
   for special offers, product news, and recommendations.
 
