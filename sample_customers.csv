@@ -1,0 +1,9 @@
+name,email,lifetime_spend,order_count,days_since_purchase,segment
+Olivia Chen,olivia.chen@email.com,1248,18,12,Champions
+Marcus Johnson,marcus.j@email.com,682,11,21,Regulars
+Sofia Patel,sofia.patel@email.com,534,8,86,At risk
+Noah Williams,noah.w@email.com,186,2,6,New customers
+Amara Okafor,amara.o@email.com,1104,16,18,Champions
+Ethan Rivera,ethan.r@email.com,428,7,14,Regulars
+Priya Nair,priya.n@email.com,388,6,104,At risk
+Liam Brooks,liam.b@email.com,74,1,3,New customers
