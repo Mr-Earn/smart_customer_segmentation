@@ -5,6 +5,28 @@ import '../app_theme.dart';
 import '../models.dart';
 import '../widgets/app_widgets.dart';
 
+enum _CustomerOrderFilter { all, open, fulfilled, cancelled }
+
+extension _CustomerOrderFilterDetails on _CustomerOrderFilter {
+  String get label => switch (this) {
+    _CustomerOrderFilter.all => 'All',
+    _CustomerOrderFilter.open => 'Open',
+    _CustomerOrderFilter.fulfilled => 'Fulfilled',
+    _CustomerOrderFilter.cancelled => 'Cancelled',
+  };
+
+  bool matches(CustomerOrder order) => switch (this) {
+    _CustomerOrderFilter.all => true,
+    _CustomerOrderFilter.open =>
+      order.status == CustomerOrderStatus.received ||
+          order.status == CustomerOrderStatus.processing,
+    _CustomerOrderFilter.fulfilled =>
+      order.status == CustomerOrderStatus.fulfilled,
+    _CustomerOrderFilter.cancelled =>
+      order.status == CustomerOrderStatus.cancelled,
+  };
+}
+
 class CustomerPortalPage extends StatefulWidget {
   const CustomerPortalPage({
     super.key,
@@ -16,6 +38,7 @@ class CustomerPortalPage extends StatefulWidget {
     required this.orders,
     required this.onPlaceOrder,
     required this.onUpdateOrder,
+    required this.onRefreshOrders,
     required this.onSaveSavedCampaigns,
     required this.onUpdateProfile,
     required this.onSavePreferences,
@@ -30,6 +53,7 @@ class CustomerPortalPage extends StatefulWidget {
   final List<CustomerOrder> orders;
   final Future<CustomerOrder> Function(CustomerOrder) onPlaceOrder;
   final Future<void> Function(CustomerOrder) onUpdateOrder;
+  final Future<void> Function() onRefreshOrders;
   final ValueChanged<Set<String>> onSaveSavedCampaigns;
   final ValueChanged<AppUser> onUpdateProfile;
   final ValueChanged<Map<String, bool>> onSavePreferences;
@@ -46,6 +70,8 @@ class _CustomerPortalPageState extends State<CustomerPortalPage> {
   late Set<String> savedCampaignIds;
   final Map<String, int> cart = {};
   bool showSavedOffers = false;
+  _CustomerOrderFilter orderFilter = _CustomerOrderFilter.all;
+  bool isRefreshingOrders = false;
 
   @override
   void initState() {
@@ -633,6 +659,24 @@ class _CustomerPortalPageState extends State<CustomerPortalPage> {
     }
   }
 
+  Future<void> _refreshOrders() async {
+    setState(() => isRefreshingOrders = true);
+    try {
+      await widget.onRefreshOrders();
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Orders refreshed.')));
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not refresh orders: $error')),
+      );
+    } finally {
+      if (mounted) setState(() => isRefreshingOrders = false);
+    }
+  }
+
   void _buyAgain(CustomerOrder order) {
     final availableProductIds = demoProducts
         .map((product) => product.id)
@@ -657,9 +701,73 @@ class _CustomerPortalPageState extends State<CustomerPortalPage> {
     );
   }
 
+  Widget _orderProgress(CustomerOrder order) {
+    if (order.status == CustomerOrderStatus.cancelled) {
+      return Container(
+        key: ValueKey('order-progress-${order.id}'),
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(vertical: 10),
+        child: const Row(
+          children: [
+            Icon(Icons.cancel_outlined, color: coral, size: 18),
+            SizedBox(width: 7),
+            Text(
+              'Order cancelled',
+              style: TextStyle(
+                color: coral,
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    final stages = [
+      ('Received', Icons.inventory_2_outlined),
+      ('Processing', Icons.autorenew_rounded),
+      ('Fulfilled', Icons.check_circle_outline_rounded),
+    ];
+    return Padding(
+      key: ValueKey('order-progress-${order.id}'),
+      padding: const EdgeInsets.symmetric(vertical: 10),
+      child: Row(
+        children: [
+          for (var index = 0; index < stages.length; index++)
+            Expanded(
+              child: Column(
+                children: [
+                  Icon(
+                    index <= order.status.index
+                        ? Icons.check_circle_rounded
+                        : stages[index].$2,
+                    color: index <= order.status.index ? forest : muted,
+                    size: 20,
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    stages[index].$1,
+                    style: TextStyle(
+                      color: index == order.status.index ? forest : muted,
+                      fontSize: 10,
+                      fontWeight: index == order.status.index
+                          ? FontWeight.w800
+                          : FontWeight.w500,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
   Widget _ordersPage() {
-    final orders = [...widget.orders]
+    final allOrders = [...widget.orders]
       ..sort((first, second) => second.createdAt.compareTo(first.createdAt));
+    final visibleOrders = allOrders.where(orderFilter.matches).toList();
     return AppPage(
       children: [
         _pageHeading(
@@ -667,8 +775,43 @@ class _CustomerPortalPageState extends State<CustomerPortalPage> {
           title: 'Your orders.',
           subtitle: 'Track the demo order requests you have submitted.',
         ),
+        Align(
+          alignment: Alignment.centerRight,
+          child: IconButton(
+            key: const ValueKey('refresh-customer-orders'),
+            tooltip: 'Refresh orders',
+            onPressed: isRefreshingOrders ? null : _refreshOrders,
+            icon: isRefreshingOrders
+                ? const SizedBox.square(
+                    dimension: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.refresh_rounded),
+          ),
+        ),
         const SizedBox(height: 18),
-        if (orders.isEmpty)
+        if (allOrders.isNotEmpty) ...[
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: SegmentedButton<_CustomerOrderFilter>(
+              showSelectedIcon: false,
+              segments: [
+                for (final filter in _CustomerOrderFilter.values)
+                  ButtonSegment(
+                    value: filter,
+                    label: Text(
+                      '${filter.label} (${allOrders.where(filter.matches).length})',
+                    ),
+                  ),
+              ],
+              selected: {orderFilter},
+              onSelectionChanged: (selection) =>
+                  setState(() => orderFilter = selection.first),
+            ),
+          ),
+          const SizedBox(height: 12),
+        ],
+        if (allOrders.isEmpty)
           Container(
             width: double.infinity,
             padding: const EdgeInsets.all(16),
@@ -681,8 +824,13 @@ class _CustomerPortalPageState extends State<CustomerPortalPage> {
               style: TextStyle(color: muted, fontSize: 12),
             ),
           )
+        else if (visibleOrders.isEmpty)
+          Text(
+            'No ${orderFilter.label.toLowerCase()} orders.',
+            style: const TextStyle(color: muted, fontSize: 12),
+          )
         else
-          for (final order in orders)
+          for (final order in visibleOrders)
             Container(
               width: double.infinity,
               margin: const EdgeInsets.only(bottom: 10),
@@ -723,6 +871,7 @@ class _CustomerPortalPageState extends State<CustomerPortalPage> {
                     ).formatMediumDate(order.createdAt.toLocal()),
                     style: const TextStyle(color: muted, fontSize: 11),
                   ),
+                  _orderProgress(order),
                   const Divider(height: 18),
                   for (final line in order.items)
                     Padding(

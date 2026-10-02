@@ -475,6 +475,18 @@ class _HomeShellState extends State<HomeShell> {
     });
   }
 
+  Future<void> refreshCustomerOrders() async {
+    final refreshedOrders = widget.supabaseBackend == null
+        ? await store.loadCustomerOrders(widget.currentUser.id)
+        : await widget.supabaseBackend!.loadCustomerOrders();
+    if (!mounted) return;
+    setState(() {
+      customerOrders
+        ..clear()
+        ..addAll(refreshedOrders);
+    });
+  }
+
   Widget _buildAdminWorkspace() {
     final pages = [
       AdminConsolePage(
@@ -606,6 +618,7 @@ class _HomeShellState extends State<HomeShell> {
       orders: customerOrders,
       onPlaceOrder: placeCustomerOrder,
       onUpdateOrder: updateCustomerOrder,
+      onRefreshOrders: refreshCustomerOrders,
       customer: customers
           .where(
             (customer) =>

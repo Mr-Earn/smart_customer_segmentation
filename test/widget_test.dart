@@ -585,6 +585,7 @@ void main() {
 
     expect(find.text('2 x House blend coffee'), findsOneWidget);
     expect(find.text('Total  ${formatRand(290)}'), findsOneWidget);
+    await tester.ensureVisible(find.text('Buy again').first);
     await tester.tap(find.text('Buy again').first);
     await tester.pumpAndSettle();
     expect(find.text('DEMO SHOP'), findsOneWidget);
@@ -597,6 +598,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('2 x House blend coffee'), findsOneWidget);
     expect(find.text('Total  ${formatRand(290)}'), findsOneWidget);
+    expect(find.text('Received'), findsOneWidget);
   });
 
   testWidgets('admin updates order status for the customer', (
@@ -644,10 +646,54 @@ void main() {
     await tester.tap(find.text('Orders'));
     await tester.pumpAndSettle();
     expect(find.text('PROCESSING'), findsOneWidget);
+    expect(find.text('Processing'), findsOneWidget);
+    expect(find.text('Open (1)'), findsOneWidget);
+    await tester.tap(find.text('Fulfilled (0)'));
+    await tester.pumpAndSettle();
+    expect(find.text('No fulfilled orders.'), findsOneWidget);
+    await tester.tap(find.text('Open (1)'));
+    await tester.pumpAndSettle();
+    expect(find.text('PROCESSING'), findsOneWidget);
     expect(
       find.byKey(const ValueKey('cancel-customer-order-fulfillment-order-1')),
       findsNothing,
     );
+  });
+
+  testWidgets('customer can refresh order status without signing in again', (
+    WidgetTester tester,
+  ) async {
+    final receivedOrder = CustomerOrder(
+      id: 'refresh-order-1',
+      customerEmail: 'customer@example.co.za',
+      items: const [
+        OrderLine(
+          productId: 'coffee',
+          productName: 'House blend coffee',
+          unitPrice: 145,
+          quantity: 1,
+        ),
+      ],
+      createdAt: DateTime.utc(2026, 10, 2),
+    );
+    await LocalStore().saveCustomerOrder(receivedOrder);
+    await signIntoRole(
+      tester,
+      AppRole.customer,
+      email: 'customer@example.co.za',
+    );
+    await tester.tap(find.text('Orders'));
+    await tester.pumpAndSettle();
+    expect(find.text('RECEIVED'), findsOneWidget);
+
+    await LocalStore().saveCustomerOrder(
+      receivedOrder.copyWith(status: CustomerOrderStatus.processing),
+    );
+    await tester.tap(find.byKey(const ValueKey('refresh-customer-orders')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('PROCESSING'), findsOneWidget);
+    expect(find.text('Orders refreshed.'), findsOneWidget);
   });
 
   testWidgets('customer can cancel an order before processing', (
@@ -680,12 +726,14 @@ void main() {
       const ValueKey('cancel-customer-order-cancelable-order-1'),
     );
     expect(cancelButton, findsOneWidget);
+    await tester.ensureVisible(cancelButton);
     await tester.tap(cancelButton);
     await tester.pumpAndSettle();
     await tester.tap(find.text('Cancel order').last);
     await tester.pumpAndSettle();
 
     expect(find.text('CANCELLED'), findsOneWidget);
+    expect(find.text('Order cancelled'), findsOneWidget);
     expect(cancelButton, findsNothing);
     expect(
       (await LocalStore().loadCustomerOrders(
