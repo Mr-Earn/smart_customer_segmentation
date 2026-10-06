@@ -172,12 +172,15 @@ class _HomeShellState extends State<HomeShell> {
   final Set<String> favorites = {};
   final Map<String, String> customerNotes = {};
   final List<AppUser> users = [];
+  final List<AdminAuditEvent> auditEvents = [];
   final List<Campaign> campaigns = [];
+  final List<StaffMessage> staffMessages = [];
   final List<CustomerOrder> customerOrders = [];
   final Set<String> savedCampaignIds = {};
   final List<Customer> importedCustomers = [];
   final Map<String, bool> customerPreferences = {};
   SegmentationSettings settings = const SegmentationSettings();
+  String? auditError;
   final LocalStore store = LocalStore();
 
   List<Customer> get customers =>
@@ -255,18 +258,42 @@ class _HomeShellState extends State<HomeShell> {
       }
       await store.markDemoDataSeeded();
     }
+    final restoredStaffMessages = backend == null
+        ? await store.loadStaffMessages()
+        : await backend.loadStaffMessages([
+            ...restoredUsers,
+            widget.currentUser,
+          ]);
+    var restoredAuditEvents = <AdminAuditEvent>[];
+    String? restoredAuditError;
+    if (widget.currentUser.role == AppRole.admin) {
+      if (backend == null) {
+        restoredAuditError =
+            'Audit history is available when Supabase is configured.';
+      } else {
+        try {
+          restoredAuditEvents = await backend.loadAdminAuditLog();
+        } catch (_) {
+          restoredAuditError =
+              'Audit history is unavailable. Apply the latest Supabase schema and refresh.';
+        }
+      }
+    }
     if (!mounted) return;
     setState(() {
       customSegments.addAll(savedSegments);
       favorites.addAll(savedFavorites);
       customerNotes.addAll(savedNotes);
       users.addAll(restoredUsers);
+      auditEvents.addAll(restoredAuditEvents);
       campaigns.addAll(restoredCampaigns);
+      staffMessages.addAll(restoredStaffMessages);
       customerOrders.addAll(savedCustomerOrders);
       this.savedCampaignIds.addAll(savedCampaignIds);
       importedCustomers.addAll(savedCustomers);
       settings = savedSettings;
       customerPreferences.addAll(savedPreferences);
+      auditError = restoredAuditError;
     });
   }
 
@@ -361,8 +388,9 @@ class _HomeShellState extends State<HomeShell> {
           .toList();
       await store.saveUsers(updatedUsers);
     }
-    if (mounted)
+    if (mounted) {
       setState(() => users.removeWhere((account) => account.id == user.id));
+    }
   }
 
   Future<void> saveSettings(SegmentationSettings value) async {
@@ -372,6 +400,49 @@ class _HomeShellState extends State<HomeShell> {
       await store.saveSegmentationSettings(value);
     }
     if (mounted) setState(() => settings = value);
+  }
+
+  Future<SegmentationRunReport> runSegmentation() async {
+    final previousCustomers = [...customers];
+    final classifiedCustomers = [
+      for (final customer in previousCustomers)
+        customer.copyWith(segmentName: classifyCustomer(customer, settings)),
+    ];
+    final updatedCount = widget.supabaseBackend == null
+        ? classifiedCustomers.length
+        : await widget.supabaseBackend!.refreshCustomerSegments(
+            classifiedCustomers,
+          );
+    if (widget.supabaseBackend == null) {
+      await store.saveImportedCustomers(classifiedCustomers);
+    }
+    if (mounted) {
+      setState(() {
+        importedCustomers
+          ..clear()
+          ..addAll(classifiedCustomers);
+      });
+    }
+    return SegmentationRunReport(
+      updatedRecords: updatedCount,
+      segmentCounts: {
+        for (final segment in customerSegments)
+          segment.name: classifiedCustomers
+              .where((customer) => customer.segmentName == segment.name)
+              .length,
+      },
+      changes: [
+        for (var index = 0; index < classifiedCustomers.length; index++)
+          if (previousCustomers[index].segmentName !=
+              classifiedCustomers[index].segmentName)
+            SegmentAssignmentChange(
+              customerName: classifiedCustomers[index].name,
+              email: classifiedCustomers[index].email,
+              previousSegment: previousCustomers[index].segmentName,
+              currentSegment: classifiedCustomers[index].segmentName,
+            ),
+      ],
+    );
   }
 
   void addCampaign(Campaign campaign) {
@@ -400,6 +471,101 @@ class _HomeShellState extends State<HomeShell> {
       if (mounted && index >= 0) setState(() => campaigns[index] = saved);
     }
   }
+
+  Future<void> sendStaffMessage(AppUser recipient, String body) async {
+    final message = widget.supabaseBackend == null
+        ? StaffMessage(
+            id: DateTime.now().microsecondsSinceEpoch.toString(),
+            senderId: widget.currentUser.id,
+            senderName: widget.currentUser.name,
+            senderRole: widget.currentUser.role,
+            recipientId: recipient.id,
+            recipientName: recipient.name,
+            recipientRole: recipient.role,
+            body: body.trim(),
+            createdAt: DateTime.now().toUtc(),
+          )
+        : await widget.supabaseBackend!.sendStaffMessage(
+            sender: widget.currentUser,
+            recipient: recipient,
+            body: body,
+          );
+    if (widget.supabaseBackend == null) {
+      await store.saveStaffMessages([...staffMessages, message]);
+    }
+    if (mounted) setState(() => staffMessages.add(message));
+  }
+
+  Future<void> markStaffMessageRead(StaffMessage message) async {
+    final updated = message.copyWith(readAt: DateTime.now().toUtc());
+    if (widget.supabaseBackend == null) {
+      final updatedMessages = [
+        for (final item in staffMessages)
+          if (item.id == message.id) updated else item,
+      ];
+      await store.saveStaffMessages(updatedMessages);
+    } else {
+      await widget.supabaseBackend!.markStaffMessageRead(message.id);
+    }
+    if (!mounted) return;
+    final index = staffMessages.indexWhere((item) => item.id == message.id);
+    if (index >= 0) setState(() => staffMessages[index] = updated);
+  }
+
+  Future<void> refreshStaffMessages() async {
+    final refreshed = widget.supabaseBackend == null
+        ? await store.loadStaffMessages()
+        : await widget.supabaseBackend!.loadStaffMessages(users);
+    if (!mounted) return;
+    setState(() {
+      staffMessages
+        ..clear()
+        ..addAll(refreshed);
+    });
+  }
+
+  Future<void> refreshAdminAudit() async {
+    final backend = widget.supabaseBackend;
+    if (backend == null) {
+      setState(() {
+        auditEvents.clear();
+        auditError = 'Audit history is available when Supabase is configured.';
+      });
+      return;
+    }
+    try {
+      final refreshed = await backend.loadAdminAuditLog();
+      if (!mounted) return;
+      setState(() {
+        auditEvents
+          ..clear()
+          ..addAll(refreshed);
+        auditError = null;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        auditError =
+            'Audit history is unavailable. Apply the latest Supabase schema and refresh.';
+      });
+    }
+  }
+
+  Widget _staffMessagesWorkspace() => MarketingWorkspacePage(
+    teamOnly: true,
+    currentUser: widget.currentUser,
+    staffUsers: users,
+    customers: const [],
+    segments: const [],
+    campaigns: const [],
+    staffMessages: staffMessages,
+    onCreateCampaign: (_) {},
+    onLaunchCampaign: (_) {},
+    onSendMessage: sendStaffMessage,
+    onMarkMessageRead: markStaffMessageRead,
+    onRefreshMessages: refreshStaffMessages,
+    onSignOut: widget.onSignOut,
+  );
 
   Future<void> acceptImport(List<Customer> customers, String source) async {
     setState(() {
@@ -494,6 +660,8 @@ class _HomeShellState extends State<HomeShell> {
         users: users,
         campaigns: campaigns,
         orders: customerOrders,
+        auditEvents: auditEvents,
+        auditError: auditError,
         settings: settings,
         onAddUser: addUser,
         onUpdateUser: updateUser,
@@ -508,6 +676,7 @@ class _HomeShellState extends State<HomeShell> {
           ),
         ),
         onUpdateOrder: updateCustomerOrder,
+        onRefreshAudit: refreshAdminAudit,
         onImport: openImport,
         onSignOut: widget.onSignOut,
       ),
@@ -515,6 +684,7 @@ class _HomeShellState extends State<HomeShell> {
         customers: customers,
         segments: [...customerSegments, ...customSegments],
         settings: settings,
+        onRunSegmentation: runSegmentation,
         onImport: openImport,
         onCreateCampaign: addCampaign,
         onViewSegments: () => setState(() => selectedTab = 2),
@@ -528,8 +698,9 @@ class _HomeShellState extends State<HomeShell> {
         onSaveNote: saveNote,
         onSignOut: widget.onSignOut,
       ),
+      _staffMessagesWorkspace(),
     ];
-    return _navigationShell(pages, const [
+    return _navigationShell(pages, [
       NavigationDestination(
         icon: Icon(Icons.admin_panel_settings_outlined),
         label: 'Admin',
@@ -538,6 +709,18 @@ class _HomeShellState extends State<HomeShell> {
       NavigationDestination(
         icon: Icon(Icons.people_alt_rounded),
         label: 'People',
+      ),
+      NavigationDestination(
+        icon: Badge(
+          isLabelVisible: staffMessages.any(
+            (message) =>
+                message.recipientId ==
+                    (widget.currentUser.authId ?? widget.currentUser.id) &&
+                !message.isRead,
+          ),
+          child: Icon(Icons.forum_outlined),
+        ),
+        label: 'Team',
       ),
     ]);
   }
@@ -548,6 +731,7 @@ class _HomeShellState extends State<HomeShell> {
         customers: customers,
         segments: [...customerSegments, ...customSegments],
         settings: settings,
+        onRunSegmentation: runSegmentation,
         onImport: openImport,
         onCreateCampaign: addCampaign,
         onViewSegments: () => setState(() => selectedTab = 1),
@@ -568,8 +752,9 @@ class _HomeShellState extends State<HomeShell> {
         onSaveNote: saveNote,
         onSignOut: widget.onSignOut,
       ),
+      _staffMessagesWorkspace(),
     ];
-    return _navigationShell(pages, const [
+    return _navigationShell(pages, [
       NavigationDestination(icon: Icon(Icons.insights_rounded), label: 'Data'),
       NavigationDestination(
         icon: Icon(Icons.donut_large_rounded),
@@ -578,6 +763,18 @@ class _HomeShellState extends State<HomeShell> {
       NavigationDestination(
         icon: Icon(Icons.people_alt_rounded),
         label: 'People',
+      ),
+      NavigationDestination(
+        icon: Badge(
+          isLabelVisible: staffMessages.any(
+            (message) =>
+                message.recipientId ==
+                    (widget.currentUser.authId ?? widget.currentUser.id) &&
+                !message.isRead,
+          ),
+          child: Icon(Icons.forum_outlined),
+        ),
+        label: 'Team',
       ),
     ]);
   }
@@ -603,11 +800,18 @@ class _HomeShellState extends State<HomeShell> {
     AppRole.analyst => _buildAnalystWorkspace(),
     AppRole.marketing => Scaffold(
       body: MarketingWorkspacePage(
+        currentUser: widget.currentUser,
+        staffUsers: users,
+        customers: customers,
         segments: [...customerSegments, ...customSegments],
         campaigns: campaigns,
+        staffMessages: staffMessages,
         onCreateCampaign: addCampaign,
         onLaunchCampaign: (campaign) =>
             updateCampaign(campaign.copyWith(status: CampaignStatus.active)),
+        onSendMessage: sendStaffMessage,
+        onMarkMessageRead: markStaffMessageRead,
+        onRefreshMessages: refreshStaffMessages,
         onSignOut: widget.onSignOut,
       ),
     ),

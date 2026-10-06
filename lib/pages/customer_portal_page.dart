@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -111,6 +113,52 @@ class _CustomerPortalPageState extends State<CustomerPortalPage> {
   void updatePreference(String key, bool value) {
     setState(() => preferences[key] = value);
     widget.onSavePreferences(preferences);
+  }
+
+  String _campaignCopy(Campaign campaign) {
+    final customerName = (widget.customer?.name ?? widget.currentUser.name)
+        .trim();
+    final firstName = customerName.isEmpty
+        ? 'there'
+        : customerName.split(RegExp(r'\s+')).first;
+    return personalizeCampaignMessage(
+      campaign.message,
+      firstName: firstName,
+      segmentName: campaign.segmentName,
+    );
+  }
+
+  Future<void> exportCustomerData() async {
+    final orders = [...widget.orders]
+      ..sort((first, second) => second.createdAt.compareTo(first.createdAt));
+    final export = {
+      'exportedAt': DateTime.now().toUtc().toIso8601String(),
+      'profile': {
+        'name': widget.currentUser.name,
+        'email': widget.currentUser.email,
+        'role': widget.currentUser.role.name,
+      },
+      'customerRecord': widget.customer?.toJson(),
+      'preferences': Map<String, bool>.of(preferences),
+      'savedCampaigns': [
+        for (final campaign in widget.campaigns)
+          if (savedCampaignIds.contains(campaign.id))
+            {
+              'id': campaign.id,
+              'name': campaign.name,
+              'segmentName': campaign.segmentName,
+              'status': campaign.status.name,
+            },
+      ],
+      'orders': [for (final order in orders) order.toJson()],
+    };
+    await Clipboard.setData(
+      ClipboardData(text: const JsonEncoder.withIndent('  ').convert(export)),
+    );
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Customer data copied as JSON.')),
+    );
   }
 
   @override
@@ -246,7 +294,7 @@ class _CustomerPortalPageState extends State<CustomerPortalPage> {
                   style: const TextStyle(fontWeight: FontWeight.w700),
                 ),
                 subtitle: Text(
-                  campaign.message,
+                  _campaignCopy(campaign),
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
                 ),
@@ -373,6 +421,7 @@ class _CustomerPortalPageState extends State<CustomerPortalPage> {
             for (final campaign in visibleCampaigns)
               _CampaignOffer(
                 campaign: campaign,
+                displayMessage: _campaignCopy(campaign),
                 isSaved: savedCampaignIds.contains(campaign.id),
                 onToggleSaved: () => setState(() {
                   if (!savedCampaignIds.add(campaign.id)) {
@@ -382,7 +431,7 @@ class _CustomerPortalPageState extends State<CustomerPortalPage> {
                 }),
                 onCopy: () async {
                   await Clipboard.setData(
-                    ClipboardData(text: campaign.message),
+                    ClipboardData(text: _campaignCopy(campaign)),
                   );
                   if (!mounted) return;
                   ScaffoldMessenger.of(context).showSnackBar(
@@ -1000,6 +1049,14 @@ class _CustomerPortalPageState extends State<CustomerPortalPage> {
         activeThumbColor: forest,
         onChanged: (value) => updatePreference('recommendations', value),
       ),
+      const SizedBox(height: 16),
+      OutlinedButton.icon(
+        key: const ValueKey('customer-export-data'),
+        onPressed: exportCustomerData,
+        icon: const Icon(Icons.download_outlined),
+        label: const Text('Copy my data as JSON'),
+        style: OutlinedButton.styleFrom(foregroundColor: forest),
+      ),
     ],
   );
 
@@ -1078,12 +1135,14 @@ class _CustomerPortalPageState extends State<CustomerPortalPage> {
 class _CampaignOffer extends StatelessWidget {
   const _CampaignOffer({
     required this.campaign,
+    required this.displayMessage,
     required this.isSaved,
     required this.onToggleSaved,
     required this.onCopy,
   });
 
   final Campaign campaign;
+  final String displayMessage;
   final bool isSaved;
   final VoidCallback onToggleSaved;
   final VoidCallback onCopy;
@@ -1116,7 +1175,7 @@ class _CampaignOffer extends StatelessWidget {
               ),
               const SizedBox(height: 4),
               Text(
-                campaign.message,
+                displayMessage,
                 style: const TextStyle(color: muted, fontSize: 12, height: 1.4),
               ),
             ],

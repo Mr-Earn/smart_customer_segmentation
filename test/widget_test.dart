@@ -5,7 +5,10 @@
 // gestures. You can also use WidgetTester to find child widgets in the widget
 // tree, read text, and verify that the values of widget properties are correct.
 
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences_platform_interface/in_memory_shared_preferences_async.dart';
 import 'package:shared_preferences_platform_interface/shared_preferences_async_platform_interface.dart';
@@ -14,6 +17,10 @@ import 'package:smart_customer_segmentation/models.dart';
 import 'package:smart_customer_segmentation/app_theme.dart';
 import 'package:smart_customer_segmentation/main.dart';
 import 'package:smart_customer_segmentation/pages/segment_builder_page.dart';
+import 'package:smart_customer_segmentation/pages/marketing_workspace_page.dart';
+import 'package:smart_customer_segmentation/pages/campaign_draft_page.dart';
+import 'package:smart_customer_segmentation/pages/analyst_workspace_page.dart';
+import 'package:smart_customer_segmentation/pages/admin_console_page.dart';
 import 'package:smart_customer_segmentation/pages/auth_page.dart';
 import 'package:smart_customer_segmentation/pages/splash_page.dart';
 import 'package:smart_customer_segmentation/pages/customer_profile_page.dart';
@@ -132,6 +139,108 @@ void main() {
     );
   });
 
+  test('staff messages preserve participants and read state', () {
+    final message = StaffMessage(
+      id: 'message-1',
+      senderId: 'marketing@example.co.za',
+      senderName: 'Nia Khumalo',
+      senderRole: AppRole.marketing,
+      recipientId: 'analyst@example.co.za',
+      recipientName: 'Sam Ndlovu',
+      recipientRole: AppRole.analyst,
+      body: 'Can you confirm the Champions audience size?',
+      createdAt: DateTime.utc(2026, 10, 6),
+    );
+
+    final restored = StaffMessage.fromJson(message.toJson());
+    expect(restored.senderRole, AppRole.marketing);
+    expect(restored.recipientName, 'Sam Ndlovu');
+    expect(restored.body, message.body);
+    expect(restored.isRead, isFalse);
+    expect(restored.copyWith(readAt: DateTime.utc(2026, 10, 6)).isRead, isTrue);
+  });
+
+  test('campaign personalization replaces supported fields only', () {
+    expect(
+      personalizeCampaignMessage(
+        'Hello {first_name}, your {segment} offer is ready.',
+        firstName: 'Amina',
+        segmentName: 'Champions',
+      ),
+      'Hello Amina, your Champions offer is ready.',
+    );
+    expect(
+      personalizeCampaignMessage(
+        'Hello {first_name}, {unknown}.',
+        firstName: 'there',
+        segmentName: 'Regulars',
+      ),
+      'Hello there, {unknown}.',
+    );
+  });
+
+  testWidgets('campaign editor previews fields and rejects unknown ones', (
+    WidgetTester tester,
+  ) async {
+    tester.view.physicalSize = const Size(800, 1200);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    Campaign? submittedCampaign;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: CampaignDraftPage(
+          segment: customerSegments.firstWhere(
+            (segment) => segment.name == 'At risk',
+          ),
+          onSaveCampaign: (campaign) => submittedCampaign = campaign,
+        ),
+      ),
+    );
+    await tester.enterText(
+      find.byKey(const ValueKey('campaign-draft-copy')),
+      'Hello {first_name}, your {segment} offer is ready.',
+    );
+    await tester.pumpAndSettle();
+    expect(
+      find.text('Hello Maya, your At risk offer is ready.'),
+      findsOneWidget,
+    );
+    expect(
+      tester
+          .widget<FilledButton>(
+            find.byKey(const ValueKey('campaign-submit-approval')),
+          )
+          .onPressed,
+      isNotNull,
+    );
+    await tester.tap(find.byKey(const ValueKey('insert-first-name-field')));
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<TextField>(find.byKey(const ValueKey('campaign-draft-copy')))
+          .controller!
+          .text,
+      endsWith('{first_name}'),
+    );
+
+    await tester.enterText(
+      find.byKey(const ValueKey('campaign-draft-copy')),
+      'Hello {nickname}, take a look.',
+    );
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<FilledButton>(
+            find.byKey(const ValueKey('campaign-submit-approval')),
+          )
+          .onPressed,
+      isNull,
+    );
+    expect(submittedCampaign, isNull);
+  });
+
   test('AND and OR rules match customer profiles', () {
     final andRule = SegmentRule(
       conditions: [
@@ -166,6 +275,57 @@ void main() {
     expect(AppRole.marketing.canConfigureModels, isFalse);
     expect(AppRole.customer.canViewAnalytics, isFalse);
     expect(AppRole.customer.canManageCampaigns, isFalse);
+  });
+
+  test('segmentation applies algorithm and configured thresholds', () {
+    const highValueRecent = Customer(
+      name: 'High value',
+      email: 'high@example.co.za',
+      segmentName: 'New customers',
+      lifetimeSpend: 1200,
+      orderCount: 12,
+      daysSincePurchase: 10,
+    );
+    const lowValueFrequent = Customer(
+      name: 'Frequent',
+      email: 'frequent@example.co.za',
+      segmentName: 'New customers',
+      lifetimeSpend: 300,
+      orderCount: 8,
+      daysSincePurchase: 12,
+    );
+    const lapsed = Customer(
+      name: 'Lapsed',
+      email: 'lapsed@example.co.za',
+      segmentName: 'Champions',
+      lifetimeSpend: 1500,
+      orderCount: 20,
+      daysSincePurchase: 90,
+    );
+
+    expect(
+      classifyCustomer(highValueRecent, const SegmentationSettings()),
+      'Champions',
+    );
+    expect(
+      classifyCustomer(lowValueFrequent, const SegmentationSettings()),
+      'Regulars',
+    );
+    expect(classifyCustomer(lapsed, const SegmentationSettings()), 'At risk');
+    expect(
+      classifyCustomer(
+        highValueRecent,
+        const SegmentationSettings(algorithm: SegmentationAlgorithm.ruleBased),
+      ),
+      'Champions',
+    );
+    expect(
+      classifyCustomer(
+        highValueRecent,
+        const SegmentationSettings(highValueSpend: 2000),
+      ),
+      'Regulars',
+    );
   });
 
   test('customer importer parses CSV and JSON records', () {
@@ -220,6 +380,28 @@ void main() {
       (await store.loadNotes())['olivia.chen@email.com'],
       'Prefers email updates',
     );
+  });
+
+  test('local store persists staff messages', () async {
+    final store = LocalStore();
+    final message = StaffMessage(
+      id: 'local-message-1',
+      senderId: 'marketing@example.co.za',
+      senderName: 'Nia Khumalo',
+      senderRole: AppRole.marketing,
+      recipientId: 'analyst@example.co.za',
+      recipientName: 'Sam Ndlovu',
+      recipientRole: AppRole.analyst,
+      body: 'Please review the audience estimate.',
+      createdAt: DateTime.utc(2026, 10, 6),
+    );
+
+    await store.saveStaffMessages([message]);
+
+    final restored = await store.loadStaffMessages();
+    expect(restored.single.body, message.body);
+    expect(restored.single.senderRole, AppRole.marketing);
+    expect(restored.single.isRead, isFalse);
   });
 
   testWidgets('dashboard displays metrics and opens segments', (
@@ -419,13 +601,21 @@ void main() {
     await tester.tap(find.byTooltip('Draft for At risk'));
     await tester.pumpAndSettle();
     await tester.enterText(find.byType(TextField).first, 'At-risk win-back');
-    await tester.ensureVisible(find.text('Submit for approval'));
+    tester.testTextInput.hide();
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.text('Submit for approval'),
+      300,
+      scrollable: find.byType(Scrollable).last,
+    );
+    await tester.pumpAndSettle();
     await tester.tap(find.text('Submit for approval'));
     await tester.pumpAndSettle();
     expect(find.text('Campaign submitted for admin review.'), findsOneWidget);
 
     await signOutFromShell(tester);
     await signIntoRole(tester, AppRole.admin);
+    await tester.ensureVisible(find.text('Campaigns'));
     await tester.tap(find.text('Campaigns'));
     await tester.pumpAndSettle();
     expect(find.text('Pending approval (2)'), findsOneWidget);
@@ -437,6 +627,8 @@ void main() {
     WidgetTester tester,
   ) async {
     await signIntoRole(tester, AppRole.admin);
+    await tester.tap(find.text('Accounts'));
+    await tester.pumpAndSettle();
 
     await tester.enterText(find.byType(TextField).at(0), 'Tebogo Mokoena');
     await tester.enterText(
@@ -461,6 +653,132 @@ void main() {
     expect(find.text('Rule-based segments'), findsOneWidget);
   });
 
+  testWidgets('admin overview shows workload and opens campaign review', (
+    WidgetTester tester,
+  ) async {
+    await signIntoRole(tester, AppRole.admin);
+
+    expect(find.text('Operations overview'), findsOneWidget);
+    expect(find.text('1 campaign awaiting review'), findsOneWidget);
+    expect(find.text('OPEN ORDERS'), findsOneWidget);
+
+    await tester.ensureVisible(find.text('1 campaign awaiting review'));
+    await tester.tap(find.text('1 campaign awaiting review'));
+    await tester.pumpAndSettle();
+    expect(find.text('Pending approval (1)'), findsOneWidget);
+    expect(find.text('At-risk welcome back'), findsWidgets);
+  });
+
+  testWidgets('admin can search the privacy-minimized audit history', (
+    WidgetTester tester,
+  ) async {
+    String? exportedCsv;
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.platform,
+      (call) async {
+        if (call.method == 'Clipboard.setData') {
+          exportedCsv = (call.arguments as Map)['text'] as String;
+        }
+        return null;
+      },
+    );
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        null,
+      ),
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AdminConsolePage(
+            currentUser: sampleDemoUsers.first,
+            users: sampleDemoUsers,
+            campaigns: const [],
+            orders: const [],
+            auditEvents: [
+              AdminAuditEvent(
+                id: 'audit-1',
+                actorName: 'Alex Morgan',
+                actorRole: 'admin',
+                eventType: 'order_status_changed',
+                entityType: 'customer_order',
+                entityId: 'order-1',
+                summary:
+                    'Order status changed from received to processing (total 240)',
+                createdAt: DateTime.now(),
+              ),
+              AdminAuditEvent(
+                id: 'audit-2',
+                actorName: 'Alex Morgan',
+                actorRole: 'admin',
+                eventType: 'role_changed',
+                entityType: 'profile',
+                entityId: 'profile-1',
+                summary: 'Role changed from analyst to marketing',
+                createdAt: DateTime.now().subtract(const Duration(hours: 1)),
+              ),
+              AdminAuditEvent(
+                id: 'audit-3',
+                actorName: 'Earlier Admin',
+                actorRole: 'admin',
+                eventType: 'role_changed',
+                entityType: 'profile',
+                entityId: 'profile-2',
+                summary: 'Role changed from analyst to marketing',
+                createdAt: DateTime.now().subtract(const Duration(days: 10)),
+              ),
+            ],
+            auditError: null,
+            settings: const SegmentationSettings(),
+            onAddUser: (_) async {},
+            onUpdateUser: (_) async {},
+            onRemoveUser: (_) async {},
+            onSaveSettings: (_) async {},
+            onApproveCampaign: (_) async {},
+            onScheduleCampaign: (_, _) async {},
+            onUpdateOrder: (_) async {},
+            onRefreshAudit: () async {},
+            onImport: () {},
+            onSignOut: () {},
+          ),
+        ),
+      ),
+    );
+    await tester.ensureVisible(find.byKey(const ValueKey('admin-open-audit')));
+    await tester.tap(find.byKey(const ValueKey('admin-open-audit')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Audit history (3)'), findsOneWidget);
+    expect(find.text('Order status updated'), findsOneWidget);
+    expect(find.textContaining('Alex Morgan · admin'), findsWidgets);
+    await tester.tap(
+      find.byKey(const ValueKey('admin-audit-time-lastSevenDays')),
+    );
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Earlier Admin'), findsNothing);
+    await tester.tap(find.byKey(const ValueKey('admin-audit-category-orders')));
+    await tester.pumpAndSettle();
+    expect(find.text('Order status updated'), findsOneWidget);
+    expect(find.text('Staff role changed'), findsNothing);
+    await tester.ensureVisible(
+      find.byKey(const ValueKey('admin-export-audit-csv')),
+    );
+    await tester.tap(find.byKey(const ValueKey('admin-export-audit-csv')));
+    await tester.pumpAndSettle();
+    expect(exportedCsv, contains('order_status_changed'));
+    expect(exportedCsv, isNot(contains('role_changed')));
+    await tester.tap(find.byKey(const ValueKey('admin-audit-category-all')));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const ValueKey('admin-audit-search')),
+      'not recorded',
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('No audit events match your search.'), findsOneWidget);
+    expect(find.textContaining('order-1'), findsNothing);
+  });
+
   testWidgets('marketing can create a campaign from a segment', (
     WidgetTester tester,
   ) async {
@@ -469,6 +787,14 @@ void main() {
     await tester.tap(find.byTooltip('Draft for At risk'));
     await tester.pumpAndSettle();
     await tester.enterText(find.byType(TextField).first, 'Marketing win-back');
+    tester.testTextInput.hide();
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.text('Submit for approval'),
+      300,
+      scrollable: find.byType(Scrollable).last,
+    );
+    await tester.ensureVisible(find.text('Submit for approval'));
     await tester.tap(find.text('Submit for approval'));
     await tester.pumpAndSettle();
 
@@ -479,6 +805,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Marketing win-back'), findsOneWidget);
     expect(find.textContaining('Pending approval'), findsWidgets);
+    expect(find.textContaining('2 matching records'), findsWidgets);
     expect(find.text('IN REVIEW'), findsOneWidget);
     expect(find.text('Review (2)'), findsOneWidget);
 
@@ -487,7 +814,10 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('MESSAGE PREVIEW'), findsOneWidget);
     expect(find.textContaining('It has been a while.'), findsOneWidget);
-    expect(find.textContaining('customers in At risk'), findsOneWidget);
+    expect(
+      find.textContaining('2 customer records match At risk'),
+      findsOneWidget,
+    );
     await tester.tap(find.text('Close'));
     await tester.pumpAndSettle();
 
@@ -508,9 +838,79 @@ void main() {
     expect(find.text('No campaigns match your search.'), findsOneWidget);
   });
 
+  testWidgets('marketing can compose a message to another staff role', (
+    WidgetTester tester,
+  ) async {
+    const marketingUser = AppUser(
+      email: 'marketing@example.co.za',
+      name: 'Nia Khumalo',
+      role: AppRole.marketing,
+    );
+    const analystUser = AppUser(
+      email: 'analyst@example.co.za',
+      name: 'Sam Ndlovu',
+      role: AppRole.analyst,
+    );
+    AppUser? sentTo;
+    String? sentBody;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MarketingWorkspacePage(
+          currentUser: marketingUser,
+          staffUsers: const [marketingUser, analystUser],
+          customers: const [],
+          segments: const [],
+          campaigns: const [],
+          staffMessages: const [],
+          onCreateCampaign: (_) {},
+          onLaunchCampaign: (_) {},
+          onSendMessage: (recipient, body) async {
+            sentTo = recipient;
+            sentBody = body;
+          },
+          onMarkMessageRead: (_) async {},
+          onRefreshMessages: () async {},
+          onSignOut: () {},
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('Team'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Compose'));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byType(TextField).last,
+      'Review this audience.',
+    );
+    await tester.pump();
+    await tester.tap(find.text('Send'));
+    await tester.pumpAndSettle();
+
+    expect(sentTo?.role, AppRole.analyst);
+    expect(sentBody, 'Review this audience.');
+  });
+
   testWidgets('customer can update profile and preferences', (
     WidgetTester tester,
   ) async {
+    String? exportedJson;
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.platform,
+      (call) async {
+        if (call.method == 'Clipboard.setData') {
+          exportedJson = (call.arguments as Map)['text'] as String;
+        }
+        return null;
+      },
+    );
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        null,
+      ),
+    );
     await signIntoRole(tester, AppRole.customer);
 
     expect(find.text('Your activity'), findsOneWidget);
@@ -534,6 +934,17 @@ void main() {
     await tester.tap(offersSwitch);
     await tester.pumpAndSettle();
     expect(tester.widget<SwitchListTile>(offersSwitch).value, isFalse);
+
+    await tester.ensureVisible(
+      find.byKey(const ValueKey('customer-export-data')),
+    );
+    await tester.tap(find.byKey(const ValueKey('customer-export-data')));
+    await tester.pumpAndSettle();
+    expect(exportedJson, isNotNull);
+    final export = jsonDecode(exportedJson!) as Map<String, dynamic>;
+    expect(export['profile']['email'], 'customer@example.co.za');
+    expect(export['preferences']['offers'], isFalse);
+    expect(export, isNot(contains('authId')));
   });
 
   testWidgets('customer workspace shows linked customer activity', (
@@ -660,6 +1071,193 @@ void main() {
     );
   });
 
+  testWidgets('admin can filter and bulk process selected orders', (
+    WidgetTester tester,
+  ) async {
+    final store = LocalStore();
+    for (final orderId in ['bulk-order-1', 'bulk-order-2']) {
+      await store.saveCustomerOrder(
+        CustomerOrder(
+          id: orderId,
+          customerEmail: 'bulk@example.co.za',
+          items: const [
+            OrderLine(
+              productId: 'coffee',
+              productName: 'House blend coffee',
+              unitPrice: 145,
+              quantity: 1,
+            ),
+          ],
+          createdAt: DateTime.utc(2026, 10, 2),
+        ),
+      );
+    }
+
+    await signIntoRole(tester, AppRole.admin);
+    await tester.tap(find.text('Orders'));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const ValueKey('admin-order-search')),
+      'bulk@example.co.za',
+    );
+    expect(find.text('2 orders shown'), findsOneWidget);
+    await tester.tap(find.text('Open (2)'));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(
+      find.byKey(const ValueKey('admin-select-visible-orders')),
+    );
+    await tester.tap(find.byKey(const ValueKey('admin-select-visible-orders')));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(
+      find.byKey(const ValueKey('bulk-order-processing')),
+    );
+    await tester.tap(find.byKey(const ValueKey('bulk-order-processing')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Confirm update'));
+    await tester.pumpAndSettle();
+
+    final orders = await store.loadAllCustomerOrders();
+    expect(
+      orders.map((order) => order.status),
+      everyElement(CustomerOrderStatus.processing),
+    );
+  });
+
+  testWidgets('analyst data quality review flags anomalous records', (
+    WidgetTester tester,
+  ) async {
+    const customers = [
+      Customer(
+        name: 'Repeat One',
+        email: 'repeat@example.co.za',
+        segmentName: 'Champions',
+        lifetimeSpend: 300,
+        orderCount: 2,
+        daysSincePurchase: 10,
+      ),
+      Customer(
+        name: 'Repeat Two',
+        email: 'repeat@example.co.za',
+        segmentName: 'Champions',
+        lifetimeSpend: 260,
+        orderCount: 1,
+        daysSincePurchase: 18,
+      ),
+      Customer(
+        name: 'Broken profile',
+        email: 'not-an-email',
+        segmentName: 'Unknown group',
+        lifetimeSpend: 90,
+        orderCount: 0,
+        daysSincePurchase: 250,
+      ),
+    ];
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AnalystWorkspacePage(
+            customers: customers,
+            segments: customerSegments,
+            settings: const SegmentationSettings(),
+            onRunSegmentation: () async => const SegmentationRunReport(
+              updatedRecords: 0,
+              segmentCounts: {},
+              changes: [],
+            ),
+            onImport: () {},
+            onCreateCampaign: (_) {},
+            onViewSegments: () {},
+            onSignOut: () {},
+          ),
+        ),
+      ),
+    );
+    await tester.ensureVisible(
+      find.byKey(const ValueKey('analyst-data-quality')),
+    );
+    await tester.tap(find.byKey(const ValueKey('analyst-data-quality')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('5 record flags across 4 checks'), findsOneWidget);
+    expect(find.text('Duplicate email addresses (2)'), findsOneWidget);
+    expect(find.text('Unrecognized segment (1)'), findsOneWidget);
+    expect(find.textContaining('Broken profile | not-an-email'), findsWidgets);
+  });
+
+  testWidgets('analyst threshold scenario previews without committing', (
+    WidgetTester tester,
+  ) async {
+    var segmentationCommitted = false;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AnalystWorkspacePage(
+            customers: sampleCustomers,
+            segments: customerSegments,
+            settings: const SegmentationSettings(),
+            onRunSegmentation: () async {
+              segmentationCommitted = true;
+              return const SegmentationRunReport(
+                updatedRecords: 0,
+                segmentCounts: {},
+                changes: [],
+              );
+            },
+            onImport: () {},
+            onCreateCampaign: (_) {},
+            onViewSegments: () {},
+            onSignOut: () {},
+          ),
+        ),
+      ),
+    );
+    await tester.ensureVisible(
+      find.byKey(const ValueKey('analyst-scenario-simulator')),
+    );
+    await tester.tap(find.byKey(const ValueKey('analyst-scenario-simulator')));
+    await tester.pumpAndSettle();
+
+    final spendSlider = tester.widget<Slider>(
+      find.descendant(
+        of: find.byKey(const ValueKey('analyst-scenario-spend-slider')),
+        matching: find.byType(Slider),
+      ),
+    );
+    spendSlider.onChanged!(2000);
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text('3 customer records would be reclassified'),
+      findsOneWidget,
+    );
+    expect(find.textContaining('3 → 0'), findsOneWidget);
+    expect(segmentationCommitted, isFalse);
+
+    await tester.tap(find.byKey(const ValueKey('analyst-reset-scenario')));
+    await tester.pumpAndSettle();
+    expect(
+      find.text('0 customer records would be reclassified'),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.text('Rule-based'));
+    await tester.pumpAndSettle();
+    expect(
+      find.text('1 customer record would be reclassified'),
+      findsOneWidget,
+    );
+    expect(find.textContaining('2 → 1'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('analyst-reset-scenario')));
+    await tester.pumpAndSettle();
+    expect(
+      find.text('0 customer records would be reclassified'),
+      findsOneWidget,
+    );
+    expect(segmentationCommitted, isFalse);
+  });
+
   testWidgets('customer can refresh order status without signing in again', (
     WidgetTester tester,
   ) async {
@@ -773,7 +1371,7 @@ void main() {
         id: 'active-champions',
         name: 'Champions reward',
         segmentName: 'Champions',
-        message: 'Enjoy a reward on your next order.',
+        message: 'Hello {first_name}, your {segment} offer is ready.',
         status: CampaignStatus.active,
       ),
       const Campaign(
@@ -798,6 +1396,10 @@ void main() {
     expect(find.text('Champions reward'), findsOneWidget);
     expect(find.text('At-risk offer'), findsNothing);
     expect(find.text('Upcoming reward'), findsNothing);
+    expect(
+      find.text('Hello Customer, your Champions offer is ready.'),
+      findsOneWidget,
+    );
     await tester.tap(find.byTooltip('Save Champions reward'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Saved (1)'));
@@ -855,6 +1457,8 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Admin console'), findsOneWidget);
     expect(find.text('Import customer data'), findsOneWidget);
+    await tester.tap(find.text('Accounts'));
+    await tester.pumpAndSettle();
     expect(find.text('Users (4)'), findsOneWidget);
     await tester.ensureVisible(find.text('Olivia Chen'));
     expect(find.text('Olivia Chen'), findsOneWidget);
@@ -872,7 +1476,26 @@ void main() {
     expect(find.text('8'), findsOneWidget);
     await tester.tap(find.text('Run segmentation'));
     await tester.pumpAndSettle();
-    expect(find.textContaining('RFM scoring refreshed'), findsOneWidget);
+    expect(
+      find.text('RFM scoring updated 8 records; 1 segment assignment changed.'),
+      findsOneWidget,
+    );
+    await tester.ensureVisible(
+      find.byKey(const ValueKey('analyst-run-report')),
+    );
+    await tester.tap(find.byKey(const ValueKey('analyst-run-report')));
+    await tester.pumpAndSettle();
+    expect(find.text('Champions'), findsWidgets);
+    expect(find.text('3'), findsWidgets);
+    expect(find.text('Marcus Johnson: Regulars → Champions'), findsOneWidget);
+    final classifiedCustomers = await LocalStore().loadImportedCustomers();
+    expect(classifiedCustomers, hasLength(8));
+    expect(
+      classifiedCustomers
+          .singleWhere((customer) => customer.name == 'Sofia Patel')
+          .segmentName,
+      'At risk',
+    );
     expect(find.text('Admin console'), findsNothing);
     await signOutFromShell(tester);
 

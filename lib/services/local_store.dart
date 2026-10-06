@@ -14,6 +14,7 @@ class LocalStore {
   static const _usersKey = 'demo_users_v1';
   static const _settingsKey = 'segmentation_settings_v1';
   static const _campaignsKey = 'campaigns_v1';
+  static const _staffMessagesKey = 'staff_messages_v1';
   static const _customerOrdersKey = 'customer_orders_v1';
   static const _customersKey = 'imported_customers_v1';
   static const _customerPreferencesKey = 'customer_preferences_v1';
@@ -106,6 +107,14 @@ class LocalStore {
   Future<void> saveCampaigns(List<Campaign> campaigns) => _saveJsonList(
     _campaignsKey,
     campaigns.map((campaign) => campaign.toJson()).toList(),
+  );
+
+  Future<List<StaffMessage>> loadStaffMessages() =>
+      _loadJsonList(_staffMessagesKey, StaffMessage.fromJson);
+
+  Future<void> saveStaffMessages(List<StaffMessage> messages) => _saveJsonList(
+    _staffMessagesKey,
+    messages.map((message) => message.toJson()).toList(),
   );
 
   Future<List<CustomerOrder>> loadCustomerOrders(String email) async {

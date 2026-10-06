@@ -104,6 +104,28 @@ class AppUser {
   );
 }
 
+class AdminAuditEvent {
+  const AdminAuditEvent({
+    required this.id,
+    required this.actorName,
+    required this.actorRole,
+    required this.eventType,
+    required this.entityType,
+    required this.summary,
+    required this.createdAt,
+    this.entityId,
+  });
+
+  final String id;
+  final String actorName;
+  final String actorRole;
+  final String eventType;
+  final String entityType;
+  final String? entityId;
+  final String summary;
+  final DateTime createdAt;
+}
+
 class AuthCredentials {
   const AuthCredentials({
     required this.profile,
@@ -227,6 +249,87 @@ class Campaign {
   );
 }
 
+String personalizeCampaignMessage(
+  String message, {
+  required String firstName,
+  required String segmentName,
+}) => message.replaceAllMapped(RegExp(r'\{(first_name|segment)\}'), (match) {
+  return switch (match[1]) {
+    'first_name' => firstName,
+    'segment' => segmentName,
+    _ => match[0]!,
+  };
+});
+
+class StaffMessage {
+  const StaffMessage({
+    required this.id,
+    required this.senderId,
+    required this.senderName,
+    required this.senderRole,
+    required this.recipientId,
+    required this.recipientName,
+    required this.recipientRole,
+    required this.body,
+    required this.createdAt,
+    this.readAt,
+  });
+
+  final String id;
+  final String senderId;
+  final String senderName;
+  final AppRole senderRole;
+  final String recipientId;
+  final String recipientName;
+  final AppRole recipientRole;
+  final String body;
+  final DateTime createdAt;
+  final DateTime? readAt;
+
+  bool get isRead => readAt != null;
+
+  StaffMessage copyWith({DateTime? readAt}) => StaffMessage(
+    id: id,
+    senderId: senderId,
+    senderName: senderName,
+    senderRole: senderRole,
+    recipientId: recipientId,
+    recipientName: recipientName,
+    recipientRole: recipientRole,
+    body: body,
+    createdAt: createdAt,
+    readAt: readAt ?? this.readAt,
+  );
+
+  Map<String, Object?> toJson() => {
+    'id': id,
+    'senderId': senderId,
+    'senderName': senderName,
+    'senderRole': senderRole.name,
+    'recipientId': recipientId,
+    'recipientName': recipientName,
+    'recipientRole': recipientRole.name,
+    'body': body,
+    'createdAt': createdAt.toIso8601String(),
+    'readAt': readAt?.toIso8601String(),
+  };
+
+  factory StaffMessage.fromJson(Map<String, dynamic> json) => StaffMessage(
+    id: json['id'] as String,
+    senderId: json['senderId'] as String,
+    senderName: json['senderName'] as String,
+    senderRole: AppRole.values.byName(json['senderRole'] as String),
+    recipientId: json['recipientId'] as String,
+    recipientName: json['recipientName'] as String,
+    recipientRole: AppRole.values.byName(json['recipientRole'] as String),
+    body: json['body'] as String,
+    createdAt: DateTime.parse(json['createdAt'] as String),
+    readAt: json['readAt'] == null
+        ? null
+        : DateTime.parse(json['readAt'] as String),
+  );
+}
+
 class Customer {
   const Customer({
     required this.name,
@@ -243,6 +346,15 @@ class Customer {
   final int lifetimeSpend;
   final int orderCount;
   final int daysSincePurchase;
+
+  Customer copyWith({String? segmentName}) => Customer(
+    name: name,
+    email: email,
+    segmentName: segmentName ?? this.segmentName,
+    lifetimeSpend: lifetimeSpend,
+    orderCount: orderCount,
+    daysSincePurchase: daysSincePurchase,
+  );
 
   int get recencyScore => switch (daysSincePurchase) {
     <= 14 => 5,
@@ -307,6 +419,51 @@ class Customer {
     orderCount: (json['orderCount'] as num).toInt(),
     daysSincePurchase: (json['daysSincePurchase'] as num).toInt(),
   );
+}
+
+String classifyCustomer(Customer customer, SegmentationSettings settings) {
+  if (customer.daysSincePurchase >= settings.atRiskDays) return 'At risk';
+
+  if (settings.algorithm == SegmentationAlgorithm.ruleBased) {
+    if (customer.lifetimeSpend >= settings.highValueSpend &&
+        customer.orderCount >= 3) {
+      return 'Champions';
+    }
+    return customer.orderCount <= 1 ? 'New customers' : 'Regulars';
+  }
+
+  if (customer.lifetimeSpend >= settings.highValueSpend &&
+      customer.rfmScore >= 12) {
+    return 'Champions';
+  }
+  if (customer.orderCount <= 2) return 'New customers';
+  return 'Regulars';
+}
+
+class SegmentAssignmentChange {
+  const SegmentAssignmentChange({
+    required this.customerName,
+    required this.email,
+    required this.previousSegment,
+    required this.currentSegment,
+  });
+
+  final String customerName;
+  final String email;
+  final String previousSegment;
+  final String currentSegment;
+}
+
+class SegmentationRunReport {
+  const SegmentationRunReport({
+    required this.updatedRecords,
+    required this.segmentCounts,
+    required this.changes,
+  });
+
+  final int updatedRecords;
+  final Map<String, int> segmentCounts;
+  final List<SegmentAssignmentChange> changes;
 }
 
 class StoreProduct {

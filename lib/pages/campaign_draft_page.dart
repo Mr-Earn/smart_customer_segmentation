@@ -19,8 +19,18 @@ class CampaignDraftPage extends StatefulWidget {
 }
 
 class _CampaignDraftPageState extends State<CampaignDraftPage> {
+  static const _maxMessageLength = 500;
   late final TextEditingController draftController;
   late final TextEditingController nameController;
+
+  bool get hasUnsupportedFields => RegExp(r'\{([^{}]+)\}')
+      .allMatches(draftController.text)
+      .any((match) => !{'first_name', 'segment'}.contains(match[1]));
+
+  bool get hasCallToAction => RegExp(
+    r'\b(shop|browse|claim|explore|visit|use|get|order|discover|reply|save)\b',
+    caseSensitive: false,
+  ).hasMatch(draftController.text);
 
   @override
   void initState() {
@@ -38,6 +48,19 @@ class _CampaignDraftPageState extends State<CampaignDraftPage> {
     draftController.dispose();
     nameController.dispose();
     super.dispose();
+  }
+
+  void insertMergeField(String field) {
+    final value = draftController.value;
+    final selection = value.selection;
+    final start = selection.isValid ? selection.start : value.text.length;
+    final end = selection.isValid ? selection.end : value.text.length;
+    final updatedText = value.text.replaceRange(start, end, '{$field}');
+    draftController.value = TextEditingValue(
+      text: updatedText,
+      selection: TextSelection.collapsed(offset: start + field.length + 2),
+    );
+    setState(() {});
   }
 
   @override
@@ -72,7 +95,9 @@ class _CampaignDraftPageState extends State<CampaignDraftPage> {
         if (widget.onSaveCampaign != null) ...[
           const SizedBox(height: 18),
           TextField(
+            key: const ValueKey('campaign-draft-name'),
             controller: nameController,
+            onChanged: (_) => setState(() {}),
             decoration: const InputDecoration(
               labelText: 'Campaign name',
               filled: true,
@@ -82,15 +107,95 @@ class _CampaignDraftPageState extends State<CampaignDraftPage> {
         ],
         const SizedBox(height: 18),
         TextField(
+          key: const ValueKey('campaign-draft-copy'),
           controller: draftController,
           minLines: 8,
           maxLines: 14,
+          maxLength: _maxMessageLength,
+          onChanged: (_) => setState(() {}),
           decoration: InputDecoration(
             filled: true,
             fillColor: Colors.white,
             border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
             alignLabelWithHint: true,
             labelText: 'Campaign copy',
+          ),
+        ),
+        const SizedBox(height: 8),
+        const Text(
+          'PERSONALIZATION',
+          style: TextStyle(
+            color: muted,
+            fontSize: 10,
+            fontWeight: FontWeight.w800,
+          ),
+        ),
+        const SizedBox(height: 5),
+        Wrap(
+          spacing: 7,
+          children: [
+            ActionChip(
+              key: const ValueKey('insert-first-name-field'),
+              label: const Text('{first_name}'),
+              onPressed: () => insertMergeField('first_name'),
+            ),
+            ActionChip(
+              key: const ValueKey('insert-segment-field'),
+              label: const Text('{segment}'),
+              onPressed: () => insertMergeField('segment'),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        _CampaignCheck(
+          icon: hasUnsupportedFields
+              ? Icons.error_outline_rounded
+              : Icons.check_circle_outline_rounded,
+          label: hasUnsupportedFields
+              ? 'Unsupported field. Use {first_name} or {segment}.'
+              : 'Personalization fields are ready.',
+          isWarning: hasUnsupportedFields,
+        ),
+        _CampaignCheck(
+          icon: hasCallToAction
+              ? Icons.check_circle_outline_rounded
+              : Icons.tips_and_updates_outlined,
+          label: hasCallToAction
+              ? 'Call to action detected.'
+              : 'Consider adding a clear call to action.',
+          isWarning: !hasCallToAction,
+        ),
+        const SizedBox(height: 12),
+        Container(
+          key: const ValueKey('campaign-message-preview'),
+          width: double.infinity,
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: forest.withValues(alpha: 0.12)),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'SAMPLE PREVIEW',
+                style: TextStyle(
+                  color: muted,
+                  fontSize: 9,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                personalizeCampaignMessage(
+                  draftController.text,
+                  firstName: 'Maya',
+                  segmentName: widget.segment.name,
+                ),
+                style: const TextStyle(color: ink, fontSize: 12, height: 1.4),
+              ),
+            ],
           ),
         ),
         const SizedBox(height: 12),
@@ -116,7 +221,11 @@ class _CampaignDraftPageState extends State<CampaignDraftPage> {
         if (widget.onSaveCampaign != null) ...[
           const SizedBox(height: 9),
           FilledButton.icon(
-            onPressed: nameController.text.trim().isEmpty
+            key: const ValueKey('campaign-submit-approval'),
+            onPressed:
+                nameController.text.trim().isEmpty ||
+                    draftController.text.trim().isEmpty ||
+                    hasUnsupportedFields
                 ? null
                 : () {
                     widget.onSaveCampaign!(
@@ -146,6 +255,35 @@ class _CampaignDraftPageState extends State<CampaignDraftPage> {
             ),
           ),
         ],
+      ],
+    ),
+  );
+}
+
+class _CampaignCheck extends StatelessWidget {
+  const _CampaignCheck({
+    required this.icon,
+    required this.label,
+    required this.isWarning,
+  });
+
+  final IconData icon;
+  final String label;
+  final bool isWarning;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.symmetric(vertical: 3),
+    child: Row(
+      children: [
+        Icon(icon, size: 16, color: isWarning ? coral : forest),
+        const SizedBox(width: 7),
+        Expanded(
+          child: Text(
+            label,
+            style: TextStyle(color: isWarning ? coral : muted, fontSize: 11),
+          ),
+        ),
       ],
     ),
   );

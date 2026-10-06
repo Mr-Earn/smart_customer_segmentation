@@ -44,6 +44,29 @@ class SupabaseBackend {
     return [for (final row in rows) _profileFromRow(row)];
   }
 
+  Future<List<AdminAuditEvent>> loadAdminAuditLog({int limit = 100}) async {
+    final rows = await client
+        .from('admin_audit_log')
+        .select(
+          'id,actor_name,actor_role,event_type,entity_type,entity_id,summary,created_at',
+        )
+        .order('created_at', ascending: false)
+        .limit(limit);
+    return [
+      for (final row in rows)
+        AdminAuditEvent(
+          id: row['id'].toString(),
+          actorName: row['actor_name'] as String,
+          actorRole: row['actor_role'] as String,
+          eventType: row['event_type'] as String,
+          entityType: row['entity_type'] as String,
+          entityId: row['entity_id'] as String?,
+          summary: row['summary'] as String,
+          createdAt: DateTime.parse(row['created_at'] as String),
+        ),
+    ];
+  }
+
   Future<AppUser> inviteUser(AppUser user) async {
     final response = await client.functions.invoke(
       'admin-user',
@@ -115,6 +138,22 @@ class SupabaseBackend {
           'days_since_purchase': customer.daysSincePurchase,
         },
     ], onConflict: 'created_by,email');
+  }
+
+  Future<int> refreshCustomerSegments(List<Customer> customers) async {
+    final result = await client.rpc(
+      'refresh_customer_segments',
+      params: {
+        'assignments': [
+          for (final customer in customers)
+            {
+              'email': customer.email.toLowerCase(),
+              'segment_name': customer.segmentName,
+            },
+        ],
+      },
+    );
+    return (result as num).toInt();
   }
 
   Future<List<CustomerOrder>> loadCustomerOrders({
@@ -253,6 +292,85 @@ class SupabaseBackend {
           'scheduled_at': campaign.scheduledAt?.toIso8601String(),
         })
         .eq('id', campaign.id);
+  }
+
+  Future<List<StaffMessage>> loadStaffMessages(List<AppUser> staff) async {
+    final rows = await client
+        .from('staff_messages')
+        .select('id,sender_id,recipient_id,body,created_at,read_at')
+        .order('created_at', ascending: false);
+    final peopleById = {
+      for (final user in staff)
+        if (user.authId != null) user.authId!: user,
+    };
+    return [for (final row in rows) _staffMessageFromRow(row, peopleById)];
+  }
+
+  Future<StaffMessage> sendStaffMessage({
+    required AppUser sender,
+    required AppUser recipient,
+    required String body,
+  }) async {
+    final senderId = client.auth.currentUser?.id;
+    final recipientId = recipient.authId;
+    if (senderId == null || recipientId == null) {
+      throw StateError('Both staff accounts must have a Supabase profile.');
+    }
+    final row = await client
+        .from('staff_messages')
+        .insert({
+          'sender_id': senderId,
+          'recipient_id': recipientId,
+          'body': body.trim(),
+        })
+        .select('id,sender_id,recipient_id,body,created_at,read_at')
+        .single();
+    return StaffMessage(
+      id: row['id'] as String,
+      senderId: senderId,
+      senderName: sender.name,
+      senderRole: sender.role,
+      recipientId: recipientId,
+      recipientName: recipient.name,
+      recipientRole: recipient.role,
+      body: row['body'] as String,
+      createdAt: DateTime.parse(row['created_at'] as String),
+      readAt: null,
+    );
+  }
+
+  Future<void> markStaffMessageRead(String messageId) async {
+    final recipientId = client.auth.currentUser?.id;
+    if (recipientId == null) throw StateError('Sign in to read messages.');
+    await client
+        .from('staff_messages')
+        .update({'read_at': DateTime.now().toUtc().toIso8601String()})
+        .eq('id', messageId)
+        .eq('recipient_id', recipientId);
+  }
+
+  StaffMessage _staffMessageFromRow(
+    Map<String, dynamic> row,
+    Map<String, AppUser> peopleById,
+  ) {
+    final senderId = row['sender_id'] as String;
+    final recipientId = row['recipient_id'] as String;
+    final sender = peopleById[senderId];
+    final recipient = peopleById[recipientId];
+    return StaffMessage(
+      id: row['id'] as String,
+      senderId: senderId,
+      senderName: sender?.name ?? 'Staff member',
+      senderRole: sender?.role ?? AppRole.analyst,
+      recipientId: recipientId,
+      recipientName: recipient?.name ?? 'Staff member',
+      recipientRole: recipient?.role ?? AppRole.analyst,
+      body: row['body'] as String,
+      createdAt: DateTime.parse(row['created_at'] as String),
+      readAt: row['read_at'] == null
+          ? null
+          : DateTime.parse(row['read_at'] as String),
+    );
   }
 
   Future<Map<String, dynamic>> loadUserState() async {

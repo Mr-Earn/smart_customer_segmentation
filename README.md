@@ -10,7 +10,9 @@ explicit offline/test fallback when the app is constructed without a backend.
 
 1. Create a Supabase project and open its SQL Editor.
 2. Run [`supabase/schema.sql`](supabase/schema.sql) to create the profile,
-   customer, segment, campaign, and settings tables with row-level security.
+   customer, segment, campaign, staff messaging, and settings tables with
+    row-level security. Re-run it on an existing project to add staff messaging,
+    batch segmentation, and the Admin audit log.
 3. Set the Auth email-confirmation policy to match your sign-up flow.
 4. Deploy the Admin Edge Function. It must hold the service-role key only in
     Supabase Function secrets, never in Flutter:
@@ -114,38 +116,69 @@ exist and does not create Auth accounts.
 ### Analyst workflow
 
 1. Start on **Data** to review the loaded customer count, high-value and
-    at-risk counts, and the segment report.
+    at-risk counts, and the segment report. Expand **Data quality review** to
+    inspect invalid or duplicate emails, unrecognized segments, and spend
+    recorded without orders before running segmentation. These checks flag
+    records for review; they do not modify imported data.
 2. Choose **Import CSV or connect API**. A CSV must include `name` and `email`;
     spend, order count, days since purchase, and segment are optional. You can
     also load CSV or JSON from an HTTPS API endpoint (localhost is allowed for
     development). Preview the records, then confirm the import.
-3. Choose **Run segmentation** to refresh the current RFM or rule-based
-    classification. Administrators configure the algorithm and thresholds.
+3. Choose **Run segmentation** to recalculate and persist built-in customer
+    segment assignments with the configured RFM or rule-based algorithm.
+    Expand the run report to review the resulting audience counts and customer
+    assignments that changed. Administrators configure the algorithm and
+    thresholds. Custom rule segments continue to calculate membership from
+    their saved rules.
+    Use **Threshold scenario preview** to compare RFM and rule-based outcomes
+    and test alternate spend and inactivity thresholds against current records
+    before applying a segmentation run. Reset restores the configured settings;
+    scenario changes are not persisted.
 4. Open **Segments** to inspect segment membership, build a segment from
     customer rules, or compare segments.
 5. Open **People** to search and filter customer records, inspect profiles,
     manage favorites and notes, and export or act on a selected cohort.
 6. Draft a campaign from a segment when you want Marketing to contact that
     audience.
+7. Open **Team** to coordinate with Marketing and Admin using the staff inbox.
 
 ### Marketing workflow
 
 1. Open **Segments** and choose the draft action for an audience.
 2. Edit the campaign name and message. Copy the draft for use elsewhere, or
     choose **Submit for approval** to send it to the Admin workspace.
+   Campaign copy supports `{first_name}` and `{segment}` personalization, a live
+   sample preview, a 500-character limit, and checks for unsupported fields and
+   a clear call to action. Customers see personalized copy in their offers.
 3. After approval or scheduling, open **Campaigns** and choose **Launch** when
     ready. Launched campaigns are shown to customers whose segment matches the
     campaign target and whose Special offers preference is enabled.
+    Campaign rows and previews show a current snapshot of matching customer
+    records, recent purchases, and average recorded spend; these are audience
+    estimates, not delivery or conversion metrics.
+4. Open **Team** to message Admins, Analysts, or other Marketing users, review
+    incoming and sent messages, and see unread messages. Customers cannot
+    access staff messages.
 
 ### Admin workflow
 
+The Admin console opens on **Overview**, which summarizes staff accounts,
+campaigns waiting for review, and open orders with shortcuts to the queues.
+Open **Audit** to search a read-only history of staff role changes, campaign
+creation/status changes, order creation/status changes, and segmentation model
+settings. Filter the log by category or date range, refresh it from Supabase,
+or copy the filtered events as CSV. Audit summaries avoid customer emails,
+order line items, and campaign message content.
 Use **Accounts** to invite users, change their roles, or remove accounts. Use
 **Models** to choose RFM or rule-based segmentation and adjust model thresholds.
 Use **Campaigns** to review pending campaigns, approve them, or schedule an
 approved campaign. Use **Orders** to review customer requests and advance them
 through Received, Processing, and Fulfilled, or cancel an unfulfilled request.
-These are demo orders; no payment is collected. Admins can also import customer
-data from the console.
+Search the queue by customer, order ID, or item; filter by status; and select
+multiple visible orders for confirmed batch processing, fulfillment, or
+cancellation. These are demo orders; no payment is collected. Admins can also
+import customer data from the console. Use **Team** to coordinate with Analysts
+and Marketing staff and reply to messages from other staff roles.
 
 ### Customer workflow
 
@@ -168,7 +201,9 @@ Customer accounts have **Home**, **Shop**, **Offers**, **Orders**, and **Profile
     the cart at current demo catalog prices and still requires checkout
     confirmation.
 - **Profile** lets customers update their display name and manage preferences
-  for special offers, product news, and recommendations.
+    for special offers, product news, and recommendations. Customers can also
+    copy a JSON export of their profile, linked customer record, preferences,
+    saved campaigns, and orders; internal Auth IDs are excluded.
 
 Customer activity is linked by email address. If no record matches the signed-in
 email, the workspace shows an unlinked state instead of estimated purchase
@@ -188,3 +223,6 @@ Run the automated widget tests from the project directory with:
 ```powershell
 flutter test
 ```
+EXTRA FEATURES
+
+........
