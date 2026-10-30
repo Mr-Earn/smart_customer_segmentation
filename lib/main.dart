@@ -237,9 +237,13 @@ class _HomeShellState extends State<HomeShell> {
     final savedCustomerOrders = backend == null
         ? widget.currentUser.role == AppRole.admin
               ? await store.loadAllCustomerOrders()
+              : widget.currentUser.role == AppRole.analyst
+              ? await store.loadAllCustomerOrders()
               : await store.loadCustomerOrders(widget.currentUser.id)
         : await backend.loadCustomerOrders(
-            includeAll: widget.currentUser.role == AppRole.admin,
+            includeAll:
+                widget.currentUser.role == AppRole.admin ||
+                widget.currentUser.role == AppRole.analyst,
           );
     var restoredUsers = [...savedUsers];
     var restoredCampaigns = savedCampaigns;
@@ -683,6 +687,7 @@ class _HomeShellState extends State<HomeShell> {
       AnalystWorkspacePage(
         customers: customers,
         segments: [...customerSegments, ...customSegments],
+        orders: customerOrders,
         settings: settings,
         onRunSegmentation: runSegmentation,
         onImport: openImport,
@@ -730,6 +735,7 @@ class _HomeShellState extends State<HomeShell> {
       AnalystWorkspacePage(
         customers: customers,
         segments: [...customerSegments, ...customSegments],
+        orders: customerOrders,
         settings: settings,
         onRunSegmentation: runSegmentation,
         onImport: openImport,

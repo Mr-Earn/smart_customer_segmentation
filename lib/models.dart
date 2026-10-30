@@ -402,6 +402,13 @@ class Customer {
     _ => 'Low risk',
   };
 
+  int get purchaseLikelihoodScore {
+    final recency = recencyScore * 8;
+    final frequency = frequencyScore * 7;
+    final monetary = monetaryScore * 5;
+    return (recency + frequency + monetary).clamp(0, 100);
+  }
+
   Map<String, Object> toJson() => {
     'name': name,
     'email': email,

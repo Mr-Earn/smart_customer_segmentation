@@ -1123,6 +1123,113 @@ void main() {
     );
   });
 
+  testWidgets('analyst behaviour predictions and chatbot use order history', (
+    WidgetTester tester,
+  ) async {
+    final now = DateTime.now().toUtc();
+    const customer = Customer(
+      name: 'Olivia Chen',
+      email: 'olivia.chen@email.com',
+      segmentName: 'Champions',
+      lifetimeSpend: 1248,
+      orderCount: 18,
+      daysSincePurchase: 12,
+    );
+    final orders = [
+      CustomerOrder(
+        id: 'order-1',
+        customerEmail: customer.email,
+        items: const [
+          OrderLine(
+            productId: 'coffee',
+            productName: 'House blend coffee',
+            unitPrice: 145,
+            quantity: 2,
+          ),
+        ],
+        createdAt: now.subtract(const Duration(days: 180)),
+      ),
+      CustomerOrder(
+        id: 'order-2',
+        customerEmail: customer.email,
+        items: const [
+          OrderLine(
+            productId: 'coffee',
+            productName: 'House blend coffee',
+            unitPrice: 145,
+            quantity: 3,
+          ),
+        ],
+        createdAt: now.subtract(const Duration(days: 90)),
+      ),
+      CustomerOrder(
+        id: 'order-3',
+        customerEmail: customer.email,
+        items: const [
+          OrderLine(
+            productId: 'coffee',
+            productName: 'House blend coffee',
+            unitPrice: 145,
+            quantity: 2,
+          ),
+          OrderLine(
+            productId: 'honey',
+            productName: 'Wildflower honey',
+            unitPrice: 95,
+            quantity: 1,
+          ),
+        ],
+        createdAt: now.subtract(const Duration(days: 12)),
+      ),
+    ];
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AnalystWorkspacePage(
+            customers: const [customer],
+            segments: customerSegments,
+            orders: orders,
+            settings: const SegmentationSettings(),
+            onRunSegmentation: () async => const SegmentationRunReport(
+              updatedRecords: 0,
+              segmentCounts: {},
+              changes: [],
+            ),
+            onImport: () {},
+            onCreateCampaign: (_) {},
+            onViewSegments: () {},
+            onSignOut: () {},
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Shopping behaviour predictions'), findsOneWidget);
+    expect(find.textContaining('House blend coffee'), findsWidgets);
+    expect(find.textContaining('likely'), findsWidgets);
+    expect(find.textContaining('Personalized recommendations'), findsOneWidget);
+    expect(find.textContaining('Behaviour anomalies'), findsOneWidget);
+
+    await tester.ensureVisible(find.byKey(const ValueKey('analyst-chatbot')));
+    await tester.tap(find.byKey(const ValueKey('analyst-chatbot')));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const ValueKey('analyst-chat-input')),
+      'Which customer in Champions is most likely to buy?',
+    );
+    await tester.tap(find.byKey(const ValueKey('analyst-chat-send')));
+    await tester.pumpAndSettle();
+    expect(
+      find.textContaining('Olivia Chen is the most likely buyer'),
+      findsOneWidget,
+    );
+
+    final modelCustomer = customer;
+    expect(modelCustomer.purchaseLikelihoodScore, greaterThanOrEqualTo(50));
+  });
+
   testWidgets('analyst data quality review flags anomalous records', (
     WidgetTester tester,
   ) async {
